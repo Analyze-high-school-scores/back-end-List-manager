@@ -13,18 +13,20 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 import base64
+from cleaning import cleaner
 
 app = Flask(__name__)
 CORS(app, resources={
     r"/students/*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
     r"/save": {"origins": "*", "methods": ["POST", "OPTIONS"]},
     r"/history*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
-    r"/chart/*": {"origins": "*", "methods": ["GET", "OPTIONS"]}
+    r"/chart/*": {"origins": "*", "methods": ["GET", "OPTIONS"]},
+    r"/clean/*": {"origins": "*", "methods": ["POST", "OPTIONS"]}
 })
 
 RAW_DATA_API = 'https://andyanh.id.vn/index.php/s/p7XMy828G8NKiZp/download'
 CLEANED_DATA_API = 'https://andyanh.id.vn/index.php/s/psPTAMbDrzzMnWk/download'
-UPDATED_FILE_PATH = 'Updated_Data.csv'
+UPDATED_FILE_PATH = 'https://andyanh.id.vn/index.php/s/AQrkaif3HWgs9ke/download'
 
 df = None
 cleaned_df = None
@@ -683,6 +685,54 @@ def get_heatmap_data(year):
         'labels': subject_labels,
         'values': values
     })
+
+@app.route('/clean/<choice>', methods=['POST', 'OPTIONS'])
+def clean_data_route(choice):
+    if request.method == 'OPTIONS':
+        return '', 204
+        
+    try:
+        print(f"Starting clean data process with choice: {choice}")
+        # Chuyển đổi choice thành boolean cho use_raw_data
+        use_raw_data = choice == '2'
+        
+        try:
+            # Load data
+            print("Loading data...")
+            data_df, tinh_df = cleaner.load_data(use_raw_data)
+            print("Data loaded successfully")
+            
+            # Clean data
+            print("Cleaning data...")
+            cleaned_df = cleaner.clean_data(data_df, tinh_df)
+            print("Data cleaned successfully")
+            
+            # Lưu vào buffer để trả về
+            print("Preparing output...")
+            output = StringIO()
+            cleaned_df.to_csv(output, index=False, encoding='utf-8')
+            
+            # Thêm vào lịch sử
+            operation_history.append({
+                'operation': 'CLEAN',
+                'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'data': {'choice': 'Raw Data' if use_raw_data else 'Update Data'}
+            })
+            
+            response_data = {
+                'message': 'Dữ liệu đã được làm sạch thành công',
+                'data': output.getvalue()
+            }
+            print("Sending response...")
+            return jsonify(response_data)
+            
+        except Exception as e:
+            print(f"Error during data processing: {str(e)}")
+            return jsonify({'error': f'Lỗi khi xử lý dữ liệu: {str(e)}'}), 500
+            
+    except Exception as e:
+        print(f"Error in clean_data_route: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
