@@ -5,21 +5,28 @@ import os
 from flask_cors import CORS
 import requests
 from io import StringIO
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+import seaborn as sns
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import io
+import base64
 
 app = Flask(__name__)
 CORS(app, resources={
     r"/students/*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
     r"/save": {"origins": "*", "methods": ["POST", "OPTIONS"]},
-    r"/history*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]}
+    r"/history*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
+    r"/chart/*": {"origins": "*", "methods": ["GET", "OPTIONS"]}
 })
-
 
 RAW_DATA_API = 'https://andyanh.id.vn/index.php/s/p7XMy828G8NKiZp/download'
 UPDATED_FILE_PATH = 'Updated_Data.csv'
 
 df = None
 data_loaded = False
-
 
 operation_history = []
 
@@ -84,8 +91,8 @@ def fetch_csv_from_api(api_url):
     else:
         raise Exception(f"Không thể tải dữ liệu: {response.status_code}")
 
-@app.before_request
-def load_data():
+# Thay thế @app.before_first_request bằng hàm init_app
+def init_app():
     global df, data_loaded
     if not data_loaded:
         try:
@@ -97,6 +104,15 @@ def load_data():
             print(f"Lỗi khi tải dữ liệu: {str(e)}")
             df = pd.DataFrame()
             data_loaded = True
+
+# Gọi init_app() khi khởi động ứng dụng
+init_app()
+
+@app.before_request
+def load_data():
+    global df, data_loaded
+    if not data_loaded:
+        init_app()
 
 @app.route('/students', methods=['POST', 'GET', 'OPTIONS'])
 def create_student():
@@ -325,7 +341,7 @@ def save_data():
     save_history()
     
     return jsonify({
-        'message': 'Đã lưu dữ liệu thành công',
+        'message': 'ã lưu dữ liệu thành công',
         'download_url': f'/download/{os.path.basename(UPDATED_FILE_PATH)}'
     })
 
@@ -443,6 +459,202 @@ def save_history():
         print(f"Đã lưu lịch sử thành công")
     except Exception as e:
         print(f"Lỗi khi lưu lịch sử: {str(e)}")
+
+@app.route('/chart/bar', methods=['GET'])
+def get_bar_chart_data():
+    global df
+    try:
+        # Đảm bảo dữ liệu được tải
+        if df is None or df.empty:
+            load_data()
+            
+        print("Processing bar chart data...")
+        # Tính điểm trung bình cho từng môn theo năm
+        df_2018 = df[df['Year'] == 2018]
+        df_2019 = df[df['Year'] == 2019]
+        
+        if df_2018.empty or df_2019.empty:
+            return jsonify({'error': 'Không có dữ liệu cho năm 2018 hoặc 2019'}), 400
+            
+        subjects = ['Toan', 'Van', 'Ly', 'Hoa', 'Sinh', 'Ngoai ngu', 'Lich su', 'Dia ly', 'GDCD']
+        mean_2018 = [float(df_2018[subject].mean()) for subject in subjects]
+        mean_2019 = [float(df_2019[subject].mean()) for subject in subjects]
+        
+        print("Mean 2018:", mean_2018)
+        print("Mean 2019:", mean_2019)
+        
+        data = {
+            'labels': ['Toán', 'Văn', 'Lý', 'Hóa', 'Sinh', 'Ngoại ngữ', 'Lịch sử', 'Địa lý', 'GDCD'],
+            'datasets': [
+                {
+                    'label': '2018',
+                    'data': mean_2018,
+                    'backgroundColor': 'rgba(54, 162, 235, 0.5)',
+                },
+                {
+                    'label': '2019',
+                    'data': mean_2019,
+                    'backgroundColor': 'rgba(255, 99, 132, 0.5)',
+                }
+            ]
+        }
+        print("Bar chart data:", data)
+        return jsonify(data)
+    except Exception as e:
+        print("Error in get_bar_chart_data:", str(e))
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/chart/line', methods=['GET'])
+def get_line_chart_data():
+    global df
+    subjects = ['Toan', 'Van', 'Ly', 'Hoa', 'Sinh', 'Ngoai ngu', 'Lich su', 'Dia ly', 'GDCD']
+    years = sorted(df['Year'].unique())
+    
+    datasets = []
+    for subject in subjects:
+        means = [df[df['Year'] == year][subject].mean() for year in years]
+        datasets.append({
+            'label': subject,
+            'data': means,
+            'fill': False,
+            'borderColor': f'rgb({np.random.randint(0, 255)}, {np.random.randint(0, 255)}, {np.random.randint(0, 255)})'
+        })
+    
+    data = {
+        'labels': [str(year) for year in years],
+        'datasets': datasets
+    }
+    return jsonify(data)
+
+@app.route('/chart/histogram', methods=['GET'])
+def get_histogram_data():
+    global df
+    df_2018 = df[df['Year'] == 2018]['Toan'].dropna()
+    
+    counts, bins = np.histogram(df_2018, bins=20)
+    
+    data = {
+        'labels': [f'{bins[i]:.1f}-{bins[i+1]:.1f}' for i in range(len(bins)-1)],
+        'datasets': [{
+            'label': 'Số lượng học sinh',
+            'data': counts.tolist(),
+            'backgroundColor': 'rgba(54, 162, 235, 0.5)',
+        }]
+    }
+    return jsonify(data)
+
+@app.route('/chart/pie', methods=['GET'])
+def get_pie_chart_data():
+    global df
+    
+    def calculate_pass_fail(year_df):
+        pass_count = len(year_df[year_df['Toan'] >= 5])
+        fail_count = len(year_df[year_df['Toan'] < 5])
+        return pass_count, fail_count
+    
+    df_2018 = df[df['Year'] == 2018]
+    df_2019 = df[df['Year'] == 2019]
+    
+    pass_2018, fail_2018 = calculate_pass_fail(df_2018)
+    pass_2019, fail_2019 = calculate_pass_fail(df_2019)
+    
+    data = {
+        'labels': ['Đậu', 'Rớt'],
+        'datasets': [
+            {
+                'label': '2018',
+                'data': [pass_2018, fail_2018],
+                'backgroundColor': ['rgba(75, 192, 192, 0.5)', 'rgba(255, 99, 132, 0.5)'],
+            },
+            {
+                'label': '2019',
+                'data': [pass_2019, fail_2019],
+                'backgroundColor': ['rgba(54, 162, 235, 0.5)', 'rgba(255, 206, 86, 0.5)'],
+            }
+        ]
+    }
+    return jsonify(data)
+
+@app.route('/chart/area', methods=['GET'])
+def get_area_chart_data():
+    global df
+    khoi_hoc = {
+        'A': ['Toan', 'Ly', 'Hoa'],
+        'B': ['Toan', 'Hoa', 'Sinh'],
+        'C': ['Van', 'Lich su', 'Dia ly'],
+        'D': ['Toan', 'Van', 'Ngoai ngu']
+    }
+    
+    data = {
+        'labels': ['0-1', '1-2', '2-3', '3-4', '4-5', '5-6', '6-7', '7-8', '8-9', '9-10'],
+        'datasets': []
+    }
+    
+    for khoi, subjects in khoi_hoc.items():
+        avg_scores = df[subjects].mean(axis=1)
+        hist, _ = np.histogram(avg_scores, bins=10, range=(0, 10))
+        data['datasets'].append({
+            'label': f'Khối {khoi}',
+            'data': hist.tolist(),
+            'fill': True,
+            'backgroundColor': f'rgba({np.random.randint(0, 255)}, {np.random.randint(0, 255)}, {np.random.randint(0, 255)}, 0.5)'
+        })
+    
+    return jsonify(data)
+
+@app.route('/chart/scatter', methods=['GET'])
+def get_scatter_data():
+    global df
+    toan_scores = df['Toan'].values
+    van_scores = df['Van'].values
+    
+    data = {
+        'datasets': [{
+            'label': 'Điểm Toán - Văn',
+            'data': [{'x': t, 'y': v} for t, v in zip(toan_scores, van_scores) if not (np.isnan(t) or np.isnan(v))],
+            'backgroundColor': 'rgba(54, 162, 235, 0.5)'
+        }]
+    }
+    return jsonify(data)
+
+@app.route('/chart/heatmap/<int:year>', methods=['GET'])
+def get_heatmap_data(year):
+    global df
+    year_df = df[df['Year'] == year]
+    
+    # Chọn các cột điểm số và sắp xếp theo thứ tự mong muốn
+    subjects = ['Toan', 'Van', 'Ly', 'Sinh', 'Ngoai ngu', 'Year', 'Hoa', 'Lich su', 'Dia ly', 'GDCD', 'MaTinh']
+    subject_labels = ['Toán', 'Văn', 'Lý', 'Sinh', 'Ngoại ngữ', 'Year', 'Hóa', 'Lịch sử', 'Địa lý', 'GDCD', 'MaTinh']
+    
+    # Tính ma trận tương quan và xử lý NaN
+    corr_matrix = year_df[subjects].corr().round(2)
+    
+    # Chuyển ma trận tương quan thành format phù hợp cho heatmap
+    data = []
+    for i, row_subject in enumerate(subjects):
+        for j, col_subject in enumerate(subjects):
+            value = corr_matrix.loc[row_subject, col_subject]
+            # Xử lý NaN
+            if pd.isna(value):
+                value = 0
+            data.append({
+                'x': j,
+                'y': i,
+                'value': float(value)
+            })
+    
+    # Chuyển ma trận thành list và xử lý NaN
+    values = []
+    for row in corr_matrix.values.tolist():
+        values.append([0 if pd.isna(x) else float(x) for x in row])
+    
+    return jsonify({
+        'data': data,
+        'min': -1,
+        'max': 1,
+        'labels': subject_labels,
+        'values': values
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)

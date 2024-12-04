@@ -1,0 +1,5 @@
+operation,time,sbd,data
+READ,2024-12-03 14:51:02,8002816.0,
+CREATE,2024-12-03 14:51:46,,"{'SBD': '0949000030', 'Year': '2024', 'Hoa': 7.0, 'Sinh': 10.0, 'Ngoai ngu': 9.0, 'Dia ly': 6.0, 'MaTinh': 52.0}"
+CREATE,2024-12-03 14:51:47,,"{'SBD': '', 'Year': ''}"
+FINISH,2024-12-03 14:52:16,,{'file': 'Updated_Data.csv'}
