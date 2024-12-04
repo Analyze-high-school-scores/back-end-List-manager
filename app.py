@@ -23,9 +23,11 @@ CORS(app, resources={
 })
 
 RAW_DATA_API = 'https://andyanh.id.vn/index.php/s/p7XMy828G8NKiZp/download'
+CLEANED_DATA_API = 'https://andyanh.id.vn/index.php/s/psPTAMbDrzzMnWk/download'
 UPDATED_FILE_PATH = 'Updated_Data.csv'
 
 df = None
+cleaned_df = None
 data_loaded = False
 
 operation_history = []
@@ -69,11 +71,11 @@ def init_history():
         print("Chưa có file lịch sử, tạo mới operation_history")
         operation_history = []
 
-def fetch_csv_from_api(api_url):
+def fetch_csv_from_api(api_url, cache_prefix='raw'):
     """
     Tải dữ liệu từ API và lưu cache
     """
-    cache_file = 'raw_data_cache.csv'
+    cache_file = f'{cache_prefix}_data_cache.csv'
     cache_timeout = timedelta(hours=24)
     
     if os.path.exists(cache_file):
@@ -91,18 +93,20 @@ def fetch_csv_from_api(api_url):
     else:
         raise Exception(f"Không thể tải dữ liệu: {response.status_code}")
 
-# Thay thế @app.before_first_request bằng hàm init_app
+# Sửa lại hàm init_app để load cả 2 dataset
 def init_app():
-    global df, data_loaded
+    global df, cleaned_df, data_loaded
     if not data_loaded:
         try:
-            df = fetch_csv_from_api(RAW_DATA_API)
+            df = fetch_csv_from_api(RAW_DATA_API, 'raw')
+            cleaned_df = fetch_csv_from_api(CLEANED_DATA_API, 'cleaned')
             init_history()
             data_loaded = True
             print("Đã tải dữ liệu thành công")
         except Exception as e:
             print(f"Lỗi khi tải dữ liệu: {str(e)}")
             df = pd.DataFrame()
+            cleaned_df = pd.DataFrame()
             data_loaded = True
 
 # Gọi init_app() khi khởi động ứng dụng
@@ -469,7 +473,7 @@ def get_bar_chart_data():
             load_data()
             
         print("Processing bar chart data...")
-        # Tính điểm trung bình cho từng môn theo năm
+        # Tính điểm trung bình cho từng môn theo năm và làm tròn 2 chữ số thập phân
         df_2018 = df[df['Year'] == 2018]
         df_2019 = df[df['Year'] == 2019]
         
@@ -477,8 +481,9 @@ def get_bar_chart_data():
             return jsonify({'error': 'Không có dữ liệu cho năm 2018 hoặc 2019'}), 400
             
         subjects = ['Toan', 'Van', 'Ly', 'Hoa', 'Sinh', 'Ngoai ngu', 'Lich su', 'Dia ly', 'GDCD']
-        mean_2018 = [float(df_2018[subject].mean()) for subject in subjects]
-        mean_2019 = [float(df_2019[subject].mean()) for subject in subjects]
+        # Làm tròn 2 chữ số thập phân
+        mean_2018 = [round(float(df_2018[subject].mean()), 2) for subject in subjects]
+        mean_2019 = [round(float(df_2019[subject].mean()), 2) for subject in subjects]
         
         print("Mean 2018:", mean_2018)
         print("Mean 2019:", mean_2019)
@@ -506,18 +511,34 @@ def get_bar_chart_data():
 
 @app.route('/chart/line', methods=['GET'])
 def get_line_chart_data():
-    global df
+    global cleaned_df
     subjects = ['Toan', 'Van', 'Ly', 'Hoa', 'Sinh', 'Ngoai ngu', 'Lich su', 'Dia ly', 'GDCD']
-    years = sorted(df['Year'].unique())
+    years = sorted(cleaned_df['Year'].unique())
     
     datasets = []
     for subject in subjects:
-        means = [df[df['Year'] == year][subject].mean() for year in years]
+        # Xử lý NaN và làm tròn 2 chữ số thập phân
+        means = []
+        for year in years:
+            # Lọc ra các điểm hợp lệ (loại bỏ -1)
+            valid_scores = cleaned_df[
+                (cleaned_df['Year'] == year) & 
+                (cleaned_df[subject] != -1) &  # Loại bỏ điểm -1
+                (cleaned_df[subject].notna())  # Loại bỏ NaN
+            ][subject]
+            
+            if len(valid_scores) > 0:
+                mean_value = valid_scores.mean()
+                means.append(round(float(mean_value), 2))
+            else:
+                means.append(0)  # hoặc giá trị mặc định khác nếu không có điểm hợp lệ
+                
         datasets.append({
             'label': subject,
             'data': means,
             'fill': False,
-            'borderColor': f'rgb({np.random.randint(0, 255)}, {np.random.randint(0, 255)}, {np.random.randint(0, 255)})'
+            'borderColor': f'rgb({np.random.randint(0, 255)}, {np.random.randint(0, 255)}, {np.random.randint(0, 255)})',
+            'tension': 0.1  # làm mượt đường
         })
     
     data = {
@@ -526,22 +547,44 @@ def get_line_chart_data():
     }
     return jsonify(data)
 
-@app.route('/chart/histogram', methods=['GET'])
-def get_histogram_data():
-    global df
-    df_2018 = df[df['Year'] == 2018]['Toan'].dropna()
-    
-    counts, bins = np.histogram(df_2018, bins=20)
-    
-    data = {
-        'labels': [f'{bins[i]:.1f}-{bins[i+1]:.1f}' for i in range(len(bins)-1)],
-        'datasets': [{
-            'label': 'Số lượng học sinh',
-            'data': counts.tolist(),
-            'backgroundColor': 'rgba(54, 162, 235, 0.5)',
-        }]
-    }
-    return jsonify(data)
+@app.route('/chart/histogram/<subject>/<int:year>', methods=['GET'])
+def get_histogram_data(subject, year):
+    global cleaned_df
+    try:
+        # Map tên môn từ tiếng Việt sang tiếng Anh
+        subject_mapping = {
+            'Toan': 'Toán',
+            'Van': 'Văn',
+            'Ly': 'Lý',
+            'Hoa': 'Hóa',
+            'Sinh': 'Sinh',
+            'Ngoai ngu': 'Ngoại ngữ',
+            'Lich su': 'Lịch sử',
+            'Dia ly': 'Địa lý',
+            'GDCD': 'GDCD'
+        }
+        
+        # Lọc dữ liệu hợp lệ theo năm và môn học
+        valid_scores = cleaned_df[
+            (cleaned_df['Year'] == year) &
+            (cleaned_df[subject] != -1) & 
+            (cleaned_df[subject].notna())
+        ][subject].values
+        
+        counts, bins = np.histogram(valid_scores, bins=20, range=(0, 10))
+        
+        data = {
+            'labels': [f'{bins[i]:.1f}-{bins[i+1]:.1f}' for i in range(len(bins)-1)],
+            'datasets': [{
+                'label': f'Phân phối điểm môn {subject_mapping.get(subject, subject)} năm {year}',
+                'data': counts.tolist(),
+                'backgroundColor': 'rgba(54, 162, 235, 0.5)',
+            }]
+        }
+        return jsonify(data)
+    except Exception as e:
+        print("Error in get_histogram_data:", str(e))
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/chart/pie', methods=['GET'])
 def get_pie_chart_data():
@@ -600,21 +643,6 @@ def get_area_chart_data():
             'backgroundColor': f'rgba({np.random.randint(0, 255)}, {np.random.randint(0, 255)}, {np.random.randint(0, 255)}, 0.5)'
         })
     
-    return jsonify(data)
-
-@app.route('/chart/scatter', methods=['GET'])
-def get_scatter_data():
-    global df
-    toan_scores = df['Toan'].values
-    van_scores = df['Van'].values
-    
-    data = {
-        'datasets': [{
-            'label': 'Điểm Toán - Văn',
-            'data': [{'x': t, 'y': v} for t, v in zip(toan_scores, van_scores) if not (np.isnan(t) or np.isnan(v))],
-            'backgroundColor': 'rgba(54, 162, 235, 0.5)'
-        }]
-    }
     return jsonify(data)
 
 @app.route('/chart/heatmap/<int:year>', methods=['GET'])
