@@ -14,19 +14,28 @@ import matplotlib.pyplot as plt
 import io
 import base64
 from cleaning import cleaner
+import tempfile
 
 app = Flask(__name__)
 CORS(app, resources={
-    r"/students/*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
-    r"/save": {"origins": "*", "methods": ["POST", "OPTIONS"]},
-    r"/history*": {"origins": "*", "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
-    r"/chart/*": {"origins": "*", "methods": ["GET", "OPTIONS"]},
-    r"/clean/*": {"origins": "*", "methods": ["POST", "OPTIONS"]}
+    r"/students/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
+    r"/save": {"origins": ["http://localhost:3000"], "methods": ["POST", "OPTIONS"]},
+    r"/history*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
+    r"/chart/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "OPTIONS"]},
+    r"/clean/*": {"origins": ["http://localhost:3000"], "methods": ["POST", "OPTIONS"]},
+    r"/tinh-data": {"origins": ["http://localhost:3000"], "methods": ["GET"]},
+    r"/*": {
+        "origins": ["http://localhost:3000"],
+        "allow_credentials": True,
+        "expose_headers": ["Content-Type", "X-CSRFToken"],
+        "supports_credentials": True
+    }
 })
 
 RAW_DATA_API = 'https://andyanh.id.vn/index.php/s/p7XMy828G8NKiZp/download'
 CLEANED_DATA_API = 'https://andyanh.id.vn/index.php/s/psPTAMbDrzzMnWk/download'
 UPDATED_FILE_PATH = 'https://andyanh.id.vn/index.php/s/AQrkaif3HWgs9ke/download'
+TINH_FILE_PATH = 'https://andyanh.id.vn/index.php/s/zbHTAjksBekNB4M/download'
 
 df = None
 cleaned_df = None
@@ -94,6 +103,59 @@ def fetch_csv_from_api(api_url, cache_prefix='raw'):
         return df
     else:
         raise Exception(f"Không thể tải dữ liệu: {response.status_code}")
+
+def fetch_tinh_data():
+    """
+    Tải và cache dữ liệu tỉnh
+    """
+    cache_file = 'tinh_cache.csv'
+    cache_timeout = timedelta(hours=24)
+    
+    try:
+        # Kiểm tra cache
+        if os.path.exists(cache_file):
+            modified_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+            if datetime.now() - modified_time < cache_timeout:
+                print(f"Đang tải dữ liệu tỉnh từ cache...")
+                df = pd.read_csv(cache_file)
+                print(f"Dữ liệu tỉnh từ cache: {df.shape[0]} dòng")
+                if df.shape[0] > 100:  # Nếu số dòng quá lớn, có thể là file sai
+                    print("Số lượng dòng bất thường, xóa cache và tải lại")
+                    os.remove(cache_file)
+                else:
+                    return df
+        
+        # Nếu không có cache hoặc cache hết hạn, tải mới
+        print(f"Đang tải dữ liệu tỉnh từ API: {TINH_FILE_PATH}")
+        response = requests.get(TINH_FILE_PATH)
+        print(f"Status code: {response.status_code}")
+        
+        if response.status_code == 200:
+            content = response.text
+            # In ra vài dòng đầu để kiểm tra format
+            print("Mẫu dữ liệu:")
+            print(content.split('\n')[:5])
+            
+            df = pd.read_csv(StringIO(content))
+            
+            # Kiểm tra số lượng dòng
+            if df.shape[0] > 100:  # Nếu số dòng quá lớn, có thể là file sai
+                raise Exception("Dữ liệu tỉnh không đúng định dạng")
+            
+            print(f"Đã đọc được DataFrame với {df.shape[0]} dòng")
+            print("Các cột:", df.columns.tolist())
+            
+            # Lưu cache
+            df.to_csv(cache_file, index=False)
+            print(f"Đã lưu cache vào {cache_file}")
+            
+            return df
+        else:
+            raise Exception(f"Không thể tải dữ liệu tỉnh: {response.status_code}")
+            
+    except Exception as e:
+        print(f"Lỗi trong fetch_tinh_data: {str(e)}")
+        raise e
 
 # Sửa lại hàm init_app để load cả 2 dataset
 def init_app():
@@ -165,7 +227,7 @@ def create_student():
     new_student_df = pd.DataFrame([new_student_data])
     df = pd.concat([df, new_student_df], ignore_index=True)
     
-    # Thêm vào lịch sử
+    # Thm vào lịch sử
     operation_history.append({
         'operation': 'CREATE',
         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -333,23 +395,33 @@ def save_data():
         return '', 204
     global df, operation_history
     
-    # Lưu file CSV
-    df.to_csv(UPDATED_FILE_PATH, index=False)
-    
-    # Thêm vào lịch sử
-    operation_history.append({
-        'operation': 'FINISH',
-        'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'data': {'file': UPDATED_FILE_PATH}
-    })
-    
-    # Lưu lịch sử thao tác với hàm mới
-    save_history()
-    
-    return jsonify({
-        'message': 'ã lưu dữ liệu thành công',
-        'download_url': f'/download/{os.path.basename(UPDATED_FILE_PATH)}'
-    })
+    try:
+        # Thay vì lưu vào URL, lưu vào file local trước
+        local_file_path = 'Updated_Data.csv'
+        df.to_csv(local_file_path, index=False)
+        
+        # Thêm vào lịch sử
+        operation_history.append({
+            'operation': 'FINISH',
+            'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'data': {'file': local_file_path}
+        })
+        
+        # Lưu lịch sử thao tác
+        save_history()
+        
+        # Trả về nội dung file để frontend có thể tải xuống
+        with open(local_file_path, 'r', encoding='utf-8') as file:
+            file_content = file.read()
+            
+        return jsonify({
+            'message': 'Đã lưu dữ liệu thành công',
+            'data': file_content
+        })
+        
+    except Exception as e:
+        print(f"Error saving data: {str(e)}")
+        return jsonify({'error': f'Lỗi khi lưu dữ liệu: {str(e)}'}), 500
 
 @app.route('/download/<filename>')
 def download_file(filename):
@@ -377,7 +449,7 @@ def get_history():
             'time': record['time']
         }
         
-        # Xử lý data để tránh lỗi NaN
+        # Xử lý data để tránh li NaN
         if 'data' in record:
             if isinstance(record['data'], dict):
                 formatted_data = {}
@@ -526,7 +598,7 @@ def get_line_chart_data():
             valid_scores = cleaned_df[
                 (cleaned_df['Year'] == year) & 
                 (cleaned_df[subject] != -1) &  # Loại bỏ điểm -1
-                (cleaned_df[subject].notna())  # Loại bỏ NaN
+                (cleaned_df[subject].notna())  # Loi bỏ NaN
             ][subject]
             
             if len(valid_scores) > 0:
@@ -566,7 +638,7 @@ def get_histogram_data(subject, year):
             'GDCD': 'GDCD'
         }
         
-        # Lọc dữ liệu hợp lệ theo năm và môn học
+        # Lọc d liệu hợp lệ theo năm và môn học
         valid_scores = cleaned_df[
             (cleaned_df['Year'] == year) &
             (cleaned_df[subject] != -1) & 
@@ -654,7 +726,7 @@ def get_heatmap_data(year):
     
     # Chọn các cột điểm số và sắp xếp theo thứ tự mong muốn
     subjects = ['Toan', 'Van', 'Ly', 'Sinh', 'Ngoai ngu', 'Year', 'Hoa', 'Lich su', 'Dia ly', 'GDCD', 'MaTinh']
-    subject_labels = ['Toán', 'Văn', 'Lý', 'Sinh', 'Ngoại ngữ', 'Year', 'Hóa', 'Lịch sử', 'Địa lý', 'GDCD', 'MaTinh']
+    subject_labels = ['Toán', 'Văn', 'Lý', 'Sinh', 'Ngoi ngữ', 'Year', 'Hóa', 'Lịch sử', 'Địa lý', 'GDCD', 'MaTinh']
     
     # Tính ma trận tương quan và xử lý NaN
     corr_matrix = year_df[subjects].corr().round(2)
@@ -693,7 +765,9 @@ def clean_data_route(choice):
         
     try:
         print(f"Starting clean data process with choice: {choice}")
-        # Chuyển đổi choice thành boolean cho use_raw_data
+        print("Request headers:", request.headers)  # Log headers
+        print("Request method:", request.method)    # Log method
+        
         use_raw_data = choice == '2'
         
         try:
@@ -707,10 +781,17 @@ def clean_data_route(choice):
             cleaned_df = cleaner.clean_data(data_df, tinh_df)
             print("Data cleaned successfully")
             
-            # Lưu vào buffer để trả về
-            print("Preparing output...")
-            output = StringIO()
-            cleaned_df.to_csv(output, index=False, encoding='utf-8')
+            # Tạo temporary file để lưu kết quả
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as tmp:
+                cleaned_df.to_csv(tmp.name, index=False, encoding='utf-8')
+                tmp_path = tmp.name
+            
+            # Đọc nội dung file để trả về
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                csv_content = f.read()
+            
+            # Xóa file tạm
+            os.unlink(tmp_path)
             
             # Thêm vào lịch sử
             operation_history.append({
@@ -719,12 +800,10 @@ def clean_data_route(choice):
                 'data': {'choice': 'Raw Data' if use_raw_data else 'Update Data'}
             })
             
-            response_data = {
+            return jsonify({
                 'message': 'Dữ liệu đã được làm sạch thành công',
-                'data': output.getvalue()
-            }
-            print("Sending response...")
-            return jsonify(response_data)
+                'data': csv_content
+            })
             
         except Exception as e:
             print(f"Error during data processing: {str(e)}")
@@ -734,5 +813,19 @@ def clean_data_route(choice):
         print(f"Error in clean_data_route: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/tinh-data', methods=['GET'])
+def get_tinh_data():
+    try:
+        df = fetch_tinh_data()
+        data = df.to_dict('records')
+        print(f"Trả về {len(data)} bản ghi tỉnh")
+        print("Mẫu dữ liệu:", data[:2])  # In 2 bản ghi đầu tiên để kiểm tra
+        return jsonify({
+            'data': data
+        })
+    except Exception as e:
+        print(f"Lỗi trong get_tinh_data: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
