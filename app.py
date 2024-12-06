@@ -15,17 +15,31 @@ import io
 import base64
 from cleaning import cleaner
 import tempfile
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
+
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://list-manager-omega.vercel.app"
+]
+
 CORS(app, resources={
-    r"/students/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
-    r"/save": {"origins": ["http://localhost:3000"], "methods": ["POST", "OPTIONS"]},
-    r"/history*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
-    r"/chart/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "OPTIONS"]},
-    r"/clean/*": {"origins": ["http://localhost:3000"], "methods": ["POST", "OPTIONS"]},
-    r"/tinh-data": {"origins": ["http://localhost:3000"], "methods": ["GET"]},
+    r"/students/*": {"origins": ALLOWED_ORIGINS, "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
+    r"/save": {"origins": ALLOWED_ORIGINS, "methods": ["POST", "OPTIONS"]},
+    r"/history*": {"origins": ALLOWED_ORIGINS, "methods": ["GET", "POST", "DELETE", "PUT", "OPTIONS"]},
+    r"/chart/*": {"origins": ALLOWED_ORIGINS, "methods": ["GET", "OPTIONS"]},
+    r"/clean/*": {"origins": ALLOWED_ORIGINS, "methods": ["POST", "OPTIONS"]},
+    r"/tinh-data": {"origins": ALLOWED_ORIGINS, "methods": ["GET"]},
     r"/*": {
-        "origins": ["http://localhost:3000"],
+        "origins": ALLOWED_ORIGINS,
         "allow_credentials": True,
         "expose_headers": ["Content-Type", "X-CSRFToken"],
         "supports_credentials": True
@@ -441,7 +455,7 @@ def get_history():
     
     print("Current operation_history:", operation_history)  # Debug log
         
-    # Xử lý dữ liệu trước khi gửi về frontend
+    # X lý dữ liu trước khi gửi về frontend
     formatted_history = []
     for record in operation_history:
         formatted_record = {
